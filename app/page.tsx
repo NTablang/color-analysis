@@ -1,103 +1,317 @@
-import Image from "next/image";
+'use client'
+import React, { useState, useRef, useCallback } from 'react';
+import { Upload, X, Download } from 'lucide-react';
 
-export default function Home() {
+interface Gradient {
+  startColor: string;
+  endColor: string;
+}
+
+const ImageGradientGenerator = () => {
+  const [image, setImage] = useState<string | null>(null);
+  const [gradient, setGradient] = useState<Gradient | null>(null);
+  const [isProcessing, setIsProcessing] = useState<boolean>(false);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Extract dominant colors from image
+  const extractColors = useCallback((imgElement: HTMLImageElement): Gradient => {
+    const canvas = canvasRef.current;
+    if (!canvas) {
+      return { startColor: '#000000', endColor: '#444444' };
+    }
+    
+    const ctx = canvas.getContext('2d');
+    if (!ctx) {
+      return { startColor: '#000000', endColor: '#444444' };
+    }
+
+    // Set canvas size to match image
+    canvas.width = imgElement.width;
+    canvas.height = imgElement.height;
+
+    // Draw image to canvas
+    ctx.drawImage(imgElement, 0, 0);
+
+    // Get image data
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const data = imageData.data;
+
+    // Color frequency map
+    const colorMap: Record<string, number> = {};
+    const step = 4; // Sample every nth pixel for performance
+
+    for (let i = 0; i < data.length; i += step * 4) {
+      const r = data[i];
+      const g = data[i + 1];
+      const b = data[i + 2];
+      const a = data[i + 3];
+
+      // Skip transparent pixels
+      if (a < 128) continue;
+
+      // Reduce color precision to group similar colors
+      const reducedR = Math.floor(r / 32) * 32;
+      const reducedG = Math.floor(g / 32) * 32;
+      const reducedB = Math.floor(b / 32) * 32;
+
+      const colorKey = `${reducedR},${reducedG},${reducedB}`;
+      colorMap[colorKey] = (colorMap[colorKey] || 0) + 1;
+    }
+
+    // Sort colors by frequency
+    const sortedColors = Object.entries(colorMap)
+      .sort(([, a], [, b]) => b - a)
+      .map(([color]) => {
+        const [r, g, b] = color.split(',').map(Number);
+        return { r, g, b };
+      });
+
+    if (sortedColors.length === 0) {
+      return { startColor: '#000000', endColor: '#444444' };
+    }
+
+    // Get dominant and accent colors
+    const dominantColor = sortedColors[0];
+    const accentColor = sortedColors[Math.min(3, sortedColors.length - 1)] || dominantColor;
+
+    // Calculate saturation and brightness
+    const getSaturation = (color: { r: number; g: number; b: number }): number => {
+      const max = Math.max(color.r, color.g, color.b);
+      const min = Math.min(color.r, color.g, color.b);
+      return max === 0 ? 0 : ((max - min) / max) * 100;
+    };
+
+    const getBrightness = (color: { r: number; g: number; b: number }): number => {
+      return (color.r * 0.299 + color.g * 0.587 + color.b * 0.114) / 255 * 100;
+    };
+
+    const dominantSaturation = getSaturation(dominantColor);
+    const dominantBrightness = getBrightness(dominantColor);
+
+    // Determine if image is moody/grayscale
+    const isMoody = dominantSaturation < 15 && dominantBrightness < 50;
+
+    let startColor: string, endColor: string;
+
+    if (isMoody) {
+      // Use black-gray gradient for low saturation images
+      startColor = '#000000';
+      endColor = '#666666';
+    } else {
+      // Create gradient from dominant colors
+      const darkenColor = (color: { r: number; g: number; b: number }, factor = 0.3) => {
+        return {
+          r: Math.floor(color.r * (1 - factor)),
+          g: Math.floor(color.g * (1 - factor)),
+          b: Math.floor(color.b * (1 - factor))
+        };
+      };
+
+      const lightenColor = (color: { r: number; g: number; b: number }, factor = 0.3) => {
+        return {
+          r: Math.min(255, Math.floor(color.r * (1 + factor))),
+          g: Math.min(255, Math.floor(color.g * (1 + factor))),
+          b: Math.min(255, Math.floor(color.b * (1 + factor)))
+        };
+      };
+
+      const darkDominant = darkenColor(dominantColor);
+      const lightAccent = lightenColor(accentColor);
+
+      startColor = `rgb(${darkDominant.r}, ${darkDominant.g}, ${darkDominant.b})`;
+      endColor = `rgb(${lightAccent.r}, ${lightAccent.g}, ${lightAccent.b})`;
+    }
+
+    return { startColor, endColor };
+  }, []);
+
+  const handleImageUpload = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    setIsProcessing(true);
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onload = () => {
+        setImage(e.target?.result as string);
+        const colors = extractColors(img);
+        setGradient(colors);
+        setIsProcessing(false);
+      };
+      img.src = e.target?.result as string;
+    };
+    reader.readAsDataURL(file);
+  }, [extractColors]);
+
+  const handleDrop = useCallback((event: React.DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const file = event.dataTransfer.files[0];
+    if (file && file.type.startsWith('image/')) {
+      const fakeEvent = { target: { files: [file] } } as unknown as React.ChangeEvent<HTMLInputElement>;
+      handleImageUpload(fakeEvent);
+    }
+  }, [handleImageUpload]);
+
+  const handleDragOver = useCallback((event: React.DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+  }, []);
+
+  const clearImage = () => {
+    setImage(null);
+    setGradient(null);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  };
+
+  const copyGradientCSS = (event: React.MouseEvent<HTMLButtonElement>) => {
+    if (!gradient) return;
+
+    const css = `background: linear-gradient(135deg, ${gradient.startColor}, ${gradient.endColor});`;
+    navigator.clipboard.writeText(css);
+
+    // Show temporary feedback
+    const button = event.target as HTMLButtonElement;
+    const originalText = button.textContent;
+    button.textContent = 'Copied!';
+    setTimeout(() => {
+      button.textContent = originalText;
+    }, 1000);
+  };
+
   return (
-    <div className="font-sans grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20">
-      <main className="flex flex-col gap-[32px] row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="font-mono list-inside list-decimal text-sm/6 text-center sm:text-left">
-          <li className="mb-2 tracking-[-.01em]">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] font-mono font-semibold px-1 py-0.5 rounded">
-              app/page.tsx
-            </code>
-            .
-          </li>
-          <li className="tracking-[-.01em]">
-            Save and see your changes instantly.
-          </li>
-        </ol>
-
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:w-auto"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
-            />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 w-full sm:w-auto md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
+    <div className="min-h-screen bg-gray-50 p-8">
+      <div className="max-w-4xl mx-auto">
+        <div className="text-center mb-8">
+          <h1 className="text-3xl font-bold text-gray-900 mb-2">
+            Image Gradient Generator
+          </h1>
+          <p className="text-gray-600">
+            Upload an image to generate a contextual gradient like Genius
+          </p>
         </div>
-      </main>
-      <footer className="row-start-3 flex gap-[24px] flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
+
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+          {/* Upload Section */}
+          <div className="space-y-6">
+            <div className="bg-white rounded-lg shadow-lg p-6">
+              <h2 className="text-xl font-semibold mb-4">Upload Image</h2>
+
+              {!image ? (
+                <div
+                  className="border-2 border-dashed border-gray-300 rounded-lg p-12 text-center hover:border-blue-400 transition-colors cursor-pointer"
+                  onDrop={handleDrop}
+                  onDragOver={handleDragOver}
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  <Upload className="mx-auto h-12 w-12 text-gray-400 mb-4" />
+                  <p className="text-gray-600 mb-2">
+                    Drop an image here or click to upload
+                  </p>
+                  <p className="text-sm text-gray-500">
+                    Supports JPG, PNG, GIF up to 10MB
+                  </p>
+                </div>
+              ) : (
+                <div className="relative">
+                  <img
+                    src={image}
+                    alt="Uploaded"
+                    className="w-full h-64 object-cover rounded-lg"
+                  />
+                  <button
+                    onClick={clearImage}
+                    className="absolute top-2 right-2 bg-red-500 text-white p-2 rounded-full hover:bg-red-600 transition-colors"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+              )}
+
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*"
+                onChange={handleImageUpload}
+                className="hidden"
+              />
+
+              {isProcessing && (
+                <div className="mt-4 text-center">
+                  <div className="inline-block animate-spin rounded-full h-6 w-6 border-b-2 border-blue-500"></div>
+                  <p className="mt-2 text-gray-600">Processing image...</p>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Gradient Preview Section */}
+          <div className="space-y-6">
+            <div className="bg-white rounded-lg shadow-lg p-6">
+              <h2 className="text-xl font-semibold mb-4">Generated Gradient</h2>
+
+              {gradient ? (
+                <div className="space-y-4">
+                  <div
+                    className="w-full h-64 rounded-lg"
+                    style={{
+                      background: `linear-gradient(135deg, ${gradient.startColor}, ${gradient.endColor})`
+                    }}
+                  ></div>
+
+                  <div className="space-y-3">
+                    <div className="flex items-center space-x-3">
+                      <div
+                        className="w-8 h-8 rounded border"
+                        style={{ backgroundColor: gradient.startColor }}
+                      ></div>
+                      <span className="font-mono text-sm">{gradient.startColor}</span>
+                    </div>
+
+                    <div className="flex items-center space-x-3">
+                      <div
+                        className="w-8 h-8 rounded border"
+                        style={{ backgroundColor: gradient.endColor }}
+                      ></div>
+                      <span className="font-mono text-sm">{gradient.endColor}</span>
+                    </div>
+                  </div>
+
+                  <div className="pt-4">
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      CSS Code:
+                    </label>
+                    <div className="bg-gray-100 rounded p-3 font-mono text-sm">
+                      background: linear-gradient(135deg, {gradient.startColor}, {gradient.endColor});
+                    </div>
+                    <button
+                      onClick={copyGradientCSS}
+                      className="mt-2 bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600 transition-colors flex items-center space-x-2"
+                    >
+                      <Download className="h-4 w-4" />
+                      <span>Copy CSS</span>
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="w-full h-64 bg-gray-200 rounded-lg flex items-center justify-center">
+                  <p className="text-gray-500">Upload an image to see the gradient</p>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Hidden canvas for color processing */}
+        <canvas ref={canvasRef} className="hidden" />
+      </div>
     </div>
   );
+};
+
+export default function Home() {
+  return <ImageGradientGenerator />
 }
