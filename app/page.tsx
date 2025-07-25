@@ -7,10 +7,20 @@ interface Gradient {
   endColor: string;
 }
 
+interface Color {
+  r: number;
+  g: number;
+  b: number;
+}
+
+interface ColorMap {
+  [key: string]: number;
+}
+
 const ImageGradientGenerator = () => {
   const [image, setImage] = useState<string | null>(null);
   const [gradient, setGradient] = useState<Gradient | null>(null);
-  const [isProcessing, setIsProcessing] = useState<boolean>(false);
+  const [isProcessing, setIsProcessing] = useState(false);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -38,7 +48,7 @@ const ImageGradientGenerator = () => {
     const data = imageData.data;
 
     // Color frequency map
-    const colorMap: Record<string, number> = {};
+    const colorMap: ColorMap = {};
     const step = 4; // Sample every nth pixel for performance
 
     for (let i = 0; i < data.length; i += step * 4) {
@@ -61,7 +71,7 @@ const ImageGradientGenerator = () => {
 
     // Sort colors by frequency
     const sortedColors = Object.entries(colorMap)
-      .sort(([, a], [, b]) => b - a)
+      .sort(([, a], [, b]) => (b as number) - (a as number))
       .map(([color]) => {
         const [r, g, b] = color.split(',').map(Number);
         return { r, g, b };
@@ -76,21 +86,25 @@ const ImageGradientGenerator = () => {
     const accentColor = sortedColors[Math.min(3, sortedColors.length - 1)] || dominantColor;
 
     // Calculate saturation and brightness
-    const getSaturation = (color: { r: number; g: number; b: number }): number => {
+    const getSaturation = (color: Color): number => {
       const max = Math.max(color.r, color.g, color.b);
       const min = Math.min(color.r, color.g, color.b);
       return max === 0 ? 0 : ((max - min) / max) * 100;
     };
 
-    const getBrightness = (color: { r: number; g: number; b: number }): number => {
-      return (color.r * 0.299 + color.g * 0.587 + color.b * 0.114) / 255 * 100;
+    const getBrightness = (color: Color): number => {
+      return Math.max(color.r, color.g, color.b) / 255 * 100; // Use max instead of weighted average
     };
 
     const dominantSaturation = getSaturation(dominantColor);
     const dominantBrightness = getBrightness(dominantColor);
 
+    // Also check if ANY of the top colors are saturated (not just the dominant)
+    const hasVibrancy = sortedColors.slice(0, 5).some(color => getSaturation(color) > 30);
+
     // Determine if image is moody/grayscale
-    const isMoody = dominantSaturation < 15 && dominantBrightness < 50;
+    // Fixed: Prioritize saturation over brightness for colorful images
+    const isMoody = dominantSaturation < 20 && dominantBrightness < 60 && !hasVibrancy;
 
     let startColor: string, endColor: string;
 
@@ -100,7 +114,7 @@ const ImageGradientGenerator = () => {
       endColor = '#666666';
     } else {
       // Create gradient from dominant colors
-      const darkenColor = (color: { r: number; g: number; b: number }, factor = 0.3) => {
+      const darkenColor = (color: Color, factor = 0.3): Color => {
         return {
           r: Math.floor(color.r * (1 - factor)),
           g: Math.floor(color.g * (1 - factor)),
@@ -108,7 +122,7 @@ const ImageGradientGenerator = () => {
         };
       };
 
-      const lightenColor = (color: { r: number; g: number; b: number }, factor = 0.3) => {
+      const lightenColor = (color: Color, factor = 0.3): Color => {
         return {
           r: Math.min(255, Math.floor(color.r * (1 + factor))),
           g: Math.min(255, Math.floor(color.g * (1 + factor))),
@@ -134,14 +148,17 @@ const ImageGradientGenerator = () => {
 
     const reader = new FileReader();
     reader.onload = (e) => {
+      const result = e.target?.result;
+      if (typeof result !== 'string') return;
+      
       const img = new Image();
       img.onload = () => {
-        setImage(e.target?.result as string);
+        setImage(result);
         const colors = extractColors(img);
         setGradient(colors);
         setIsProcessing(false);
       };
-      img.src = e.target?.result as string;
+      img.src = result;
     };
     reader.readAsDataURL(file);
   }, [extractColors]);
@@ -150,10 +167,20 @@ const ImageGradientGenerator = () => {
     event.preventDefault();
     const file = event.dataTransfer.files[0];
     if (file && file.type.startsWith('image/')) {
-      const fakeEvent = { target: { files: [file] } } as unknown as React.ChangeEvent<HTMLInputElement>;
-      handleImageUpload(fakeEvent);
+      // Create a proper file input event
+      const input = fileInputRef.current;
+      if (input) {
+        // Create a new FileList-like object
+        const dataTransfer = new DataTransfer();
+        dataTransfer.items.add(file);
+        input.files = dataTransfer.files;
+        
+        // Trigger the change event
+        const changeEvent = new Event('change', { bubbles: true });
+        input.dispatchEvent(changeEvent);
+      }
     }
-  }, [handleImageUpload]);
+  }, []);
 
   const handleDragOver = useCallback((event: React.DragEvent<HTMLDivElement>) => {
     event.preventDefault();
@@ -174,12 +201,14 @@ const ImageGradientGenerator = () => {
     navigator.clipboard.writeText(css);
 
     // Show temporary feedback
-    const button = event.target as HTMLButtonElement;
+    const button = event.currentTarget;
     const originalText = button.textContent;
-    button.textContent = 'Copied!';
-    setTimeout(() => {
-      button.textContent = originalText;
-    }, 1000);
+    if (originalText) {
+      button.textContent = 'Copied!';
+      setTimeout(() => {
+        button.textContent = originalText;
+      }, 1000);
+    }
   };
 
   return (
